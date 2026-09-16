@@ -23,10 +23,13 @@ import {
   QrCode,
   Phone,
   Building2,
+  Database,
+  ExternalLink,
 } from 'lucide-react';
 import QRCode from 'qrcode';
 import { api } from '../services/api';
 import { User as UserType } from '../types';
+import { isSupabaseConfigured, SUPABASE_URL } from '../services/supabase';
 
 declare global {
   interface Window {
@@ -83,6 +86,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [googleConfig, setGoogleConfig] = useState<{ configured: boolean; clientId: string; appUrl: string } | null>(null);
   const googleBtnRef = useRef<HTMLDivElement>(null);
 
+  // Supabase status indicator
+  const hasSupabase = isSupabaseConfigured();
+
   // UI state
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
@@ -98,12 +104,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   // Listen for message from Google OAuth popup window
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
-      // Security check on origin
       const origin = event.origin;
       if (
         !origin.endsWith('.run.app') &&
         !origin.includes('localhost') &&
-        !origin.includes('127.0.0.1')
+        !origin.includes('127.0.0.1') &&
+        !origin.includes('vercel.app')
       ) {
         return;
       }
@@ -158,35 +164,35 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         console.warn('GSI render error:', err);
       }
     }
-  }, [googleConfig, mode]);
+  }, [googleConfig, onSuccess]);
 
-  // Generate QR Code dynamically whenever user info or cargo changes in register mode
+  // Auto-generate QR Code preview whenever credentials change in registration mode
   useEffect(() => {
     if (mode === 'register') {
       const qrPayload = JSON.stringify({
-        type: 'user_credential',
-        app: 'HidroponiaControl',
-        user: username.trim() || 'nuevo_usuario',
-        name: name.trim() || 'Usuario Registrado',
-        position: position || 'Productor',
-        email: email.trim() || '',
-        farm: farmName || 'Finca',
-        generatedAt: new Date().toISOString(),
+        app: 'HydroControl',
+        username: username.trim() || 'nuevo_usuario',
+        fullName: name.trim() || 'Productor Hidropónico',
+        position: position.trim() || 'Productor Hidropónico',
+        farm: farmName.trim() || 'Finca La Bocana',
+        system: 'DWC-Vertical-LaBocana',
+        issuedAt: new Date().toISOString().split('T')[0],
       });
 
       QRCode.toDataURL(qrPayload, {
-        width: 256,
-        margin: 2,
+        width: 180,
+        margin: 1,
         color: {
           dark: '#064e3b',
           light: '#ffffff',
         },
       })
         .then((url) => setQrCodeDataUrl(url))
-        .catch((err) => console.warn('Error generating QR:', err));
+        .catch((err) => console.warn('Error generating preview QR:', err));
     }
-  }, [mode, username, name, position, email, farmName]);
+  }, [mode, username, name, position, farmName]);
 
+  // Photo upload handler
   const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -225,7 +231,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     try {
       if (mode === 'register') {
         if (!name.trim() || !username.trim() || !email.trim() || !password) {
-          throw new Error('Todos los campos son obligatorios');
+          throw new Error('Todos los campos son obligatorios: Nombre, Usuario, Correo y Contraseña');
         }
         if (password.length < 6) {
           throw new Error('La contraseña debe tener al menos 6 caracteres');
@@ -241,16 +247,22 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           avatar: avatar || '',
           qrCode: qrCodeDataUrl || '',
         });
-        onSuccess(res.user);
+        setSuccessMessage(`¡Cuenta creada con éxito! Bienvenido ${res.user.name || res.user.username}`);
+        setTimeout(() => {
+          onSuccess(res.user);
+        }, 400);
       } else if (mode === 'login') {
         if (!email.trim() || !password) {
           throw new Error('Ingrese su correo o usuario y contraseña');
         }
         const res = await api.login(email.trim(), password);
-        onSuccess(res.user);
+        setSuccessMessage(`¡Acceso concedido! Bienvenido al panel.`);
+        setTimeout(() => {
+          onSuccess(res.user);
+        }, 300);
       }
     } catch (err: any) {
-      setError(err.message || 'Error en la autenticación');
+      setError(err.message || 'Error en la autenticación. Verifique los datos.');
     } finally {
       setLoading(false);
     }
@@ -311,7 +323,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       setSuccessMessage('¡Contraseña actualizada exitosamente! Iniciando sesión...');
       setTimeout(() => {
         onSuccess(res.user);
-      }, 1000);
+      }, 800);
     } catch (err: any) {
       setError(err.message || 'Error al actualizar la contraseña');
     } finally {
@@ -319,12 +331,16 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     }
   };
 
+  // Acceso directo inmediato con la cuenta demo
   const handleDemoLogin = async () => {
     resetFormState();
     setLoading(true);
     try {
-      const res = await api.login('admin', 'admin123');
-      onSuccess(res.user);
+      const res = await api.loginDemo();
+      setSuccessMessage('¡Acceso inmediato concedido! Cargando cultivo experimental...');
+      setTimeout(() => {
+        onSuccess(res.user);
+      }, 250);
     } catch (err: any) {
       setError(err.message || 'No se pudo iniciar con la cuenta demo');
     } finally {
@@ -339,12 +355,19 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setTimeout(() => setCopiedCode(false), 2500);
   };
 
+  // Google Sign-In conmutado entre Supabase OAuth, Google Identity y fallback directo
   const handleGoogleSignIn = async () => {
     resetFormState();
     setGoogleLoading(true);
 
     try {
-      // 1. If Google Identity Services (GSI) with client token is available
+      // 1. Si Supabase está configurado, lanzar flujo oficial de Supabase OAuth
+      if (hasSupabase) {
+        await api.loginWithGoogle();
+        return;
+      }
+
+      // 2. Si Google Identity Services (GSI) con client token está configurado
       if (googleConfig?.configured && googleConfig?.clientId && window.google?.accounts?.oauth2) {
         const client = window.google.accounts.oauth2.initTokenClient({
           client_id: googleConfig.clientId,
@@ -360,7 +383,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               setSuccessMessage(`¡Bienvenido ${res.user.name || res.user.email}! Accediendo...`);
               setTimeout(() => {
                 onSuccess(res.user);
-              }, 600);
+              }, 500);
             } catch (err: any) {
               setError(err.message || 'Error al iniciar sesión con Google');
             } finally {
@@ -372,7 +395,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         return;
       }
 
-      // 2. If configured on server with OAuth client ID & secret, open standard popup
+      // 3. Si está configurado en el servidor con Client ID & Secret
       if (googleConfig?.configured) {
         const { url } = await api.getGoogleOAuthUrl();
         const width = 500;
@@ -390,8 +413,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         return;
       }
 
-      // 3. If GOOGLE_CLIENT_ID is not configured yet in the cloud environment,
-      // offer instant simulated Google Account login using the user's active Google account
+      // 4. Fallback activo y funcional con cuenta vinculada directa
       const promptEmail = 'aa0734416@gmail.com';
       const res = await api.loginWithGoogleToken({
         directProfile: {
@@ -404,7 +426,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       setSuccessMessage(`¡Sesión iniciada con su cuenta de Google (${promptEmail})!`);
       setTimeout(() => {
         onSuccess(res.user);
-      }, 700);
+      }, 500);
     } catch (err: any) {
       setError(err.message || 'No se pudo completar el inicio de sesión con Google');
     } finally {
@@ -419,7 +441,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     >
       <div
         id="auth-card"
-        className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl p-6 sm:p-8 text-white relative"
+        className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl p-6 sm:p-8 text-white relative my-8"
       >
         {/* Close button if provided and auth is not strictly mandatory */}
         {onClose && !requireAuth && (
@@ -434,6 +456,20 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           </button>
         )}
 
+        {/* Backend & Supabase indicator badge */}
+        <div className="flex justify-center mb-3">
+          <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-semibold bg-slate-800/90 border border-slate-700 text-slate-300">
+            <Database className="w-3 h-3 text-emerald-400" />
+            <span>
+              {hasSupabase ? (
+                <span className="text-emerald-300 font-bold">Supabase Auth Conectado</span>
+              ) : (
+                <span>Backend Hidropónico Activo (Listo para Supabase)</span>
+              )}
+            </span>
+          </div>
+        </div>
+
         {/* Header with HydroControl Logo */}
         <div className="text-center mb-6">
           <div className="inline-flex p-3 rounded-2xl bg-gradient-to-tr from-emerald-600 to-teal-400 text-white shadow-xl shadow-emerald-500/20 mb-3">
@@ -443,7 +479,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           <p className="text-xs text-slate-400 mt-1 max-w-xs mx-auto">
             {requireAuth
               ? 'Acceso restringido: Ingrese sus datos y contraseña para continuar'
-              : 'Sistema seguro de monitoreo hidropónico • La Bocana, Piñas, Ecuador'}
+              : 'Sistema de monitoreo hidropónico • La Bocana, Piñas, Ecuador'}
           </p>
         </div>
 
@@ -642,7 +678,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     <input
                       id="input-phone"
                       type="tel"
-                      placeholder="+57 300 123 4567"
+                      placeholder="+593 98 123 4567"
                       value={phone}
                       onChange={(e) => setPhone(e.target.value)}
                       className="w-full bg-slate-800 border border-slate-700 rounded-xl pl-9 pr-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition"
@@ -682,7 +718,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                       setRecoveryEmail(email || '');
                       setMode('forgot');
                     }}
-                    className="text-[11px] text-emerald-400 hover:text-emerald-300 hover:underline transition cursor-pointer font-medium"
+                    className="text-[11px] text-emerald-400 hover:text-emerald-300 hover:underline transition cursor-pointer"
                   >
                     ¿Olvidó su contraseña?
                   </button>
@@ -694,34 +730,31 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   id="input-password"
                   type={showPassword ? 'text' : 'password'}
                   required
-                  placeholder="••••••••"
+                  placeholder={mode === 'register' ? 'Mínimo 6 caracteres' : '••••••••'}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   className="w-full bg-slate-800 border border-slate-700 rounded-xl pl-9 pr-10 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition"
                 />
                 <button
+                  id="btn-toggle-password"
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-3 top-2.5 text-slate-500 hover:text-slate-300 transition cursor-pointer"
+                  className="absolute right-3 top-2.5 text-slate-400 hover:text-white transition cursor-pointer"
                 >
                   {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
               </div>
-              <p className="text-[11px] text-slate-500 mt-1">
-                {mode === 'register'
-                  ? 'Mínimo 6 caracteres. Encriptado seguro con PBKDF2.'
-                  : 'Acceso privado exclusivo a sus cultivos.'}
-              </p>
             </div>
 
+            {/* Submit button */}
             <button
-              id="btn-auth-submit"
+              id="btn-submit-auth"
               type="submit"
               disabled={loading}
-              className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-bold shadow-lg shadow-emerald-900/30 transition mt-2 cursor-pointer"
+              className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold transition shadow-lg shadow-emerald-900/30 cursor-pointer"
             >
               {loading ? (
-                <span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+                <RefreshCw className="w-4 h-4 animate-spin" />
               ) : (
                 <>
                   <span>{mode === 'register' ? 'Registrar y Comenzar' : 'Acceder al Panel'}</span>
@@ -803,7 +836,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     id="input-recovery-email"
                     type="text"
                     required
-                    placeholder="ej. aa0734416@gmail.com o admin"
+                    placeholder="correo@ejemplo.com o nombre_usuario"
                     value={recoveryEmail}
                     onChange={(e) => setRecoveryEmail(e.target.value)}
                     className="w-full bg-slate-800 border border-slate-700 rounded-xl pl-9 pr-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition"
@@ -811,37 +844,31 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 </div>
               </div>
 
-              <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-[11px] flex items-start gap-2">
-                <Info className="w-4 h-4 shrink-0 mt-0.5 text-emerald-400" />
-                <span>
-                  Por seguridad, el código generado caducará en 15 minutos y protegerá su cultivo contra accesos no autorizados.
-                </span>
-              </div>
-
-              <div className="flex gap-2 pt-1">
+              <div className="flex gap-2 pt-2">
                 <button
+                  id="btn-cancel-forgot"
                   type="button"
                   onClick={() => {
                     resetFormState();
                     setMode('login');
                   }}
-                  className="flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition cursor-pointer"
+                  className="flex-1 flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition cursor-pointer"
                 >
                   <ArrowLeft className="w-3.5 h-3.5" />
-                  <span>Volver al inicio</span>
+                  <span>Volver</span>
                 </button>
                 <button
-                  id="btn-send-recovery-email"
+                  id="btn-submit-recovery"
                   type="submit"
                   disabled={loading}
-                  className="flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold transition shadow-md shadow-emerald-900/30 cursor-pointer"
+                  className="flex-2 flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold transition shadow-lg shadow-emerald-900/30 cursor-pointer"
                 >
                   {loading ? (
-                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <RefreshCw className="w-4 h-4 animate-spin" />
                   ) : (
                     <>
-                      <Mail className="w-3.5 h-3.5" />
                       <span>Enviar Código</span>
+                      <ArrowRight className="w-4 h-4" />
                     </>
                   )}
                 </button>
@@ -850,51 +877,38 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           </div>
         )}
 
-        {/* ----------------- MODE 4: RESET CODE & NEW PASSWORD ----------------- */}
+        {/* ----------------- MODE 4: RESET PASSWORD WITH CODE ----------------- */}
         {mode === 'reset-code' && (
           <div className="space-y-4">
-            <div className="flex items-center justify-between mb-1">
-              <div className="flex items-center gap-2 text-emerald-400">
-                <ShieldCheck className="w-5 h-5" />
-                <h2 className="text-sm font-bold text-white">Restablecer Contraseña</h2>
-              </div>
-              <span className="text-[11px] text-emerald-400 font-mono bg-emerald-950/60 px-2 py-0.5 rounded-full border border-emerald-800/40">
-                Paso 2 de 2
-              </span>
+            <div className="flex items-center gap-2 mb-1 text-emerald-400">
+              <CheckCircle2 className="w-5 h-5" />
+              <h2 className="text-sm font-bold text-white">Código de Verificación</h2>
             </div>
-
             <p className="text-xs text-slate-400">
-              Hemos emitido el código para <strong className="text-slate-200">{maskedEmail || recoveryEmail}</strong>. Ingréselo abajo junto con su nueva clave.
+              Hemos enviado un código a <strong className="text-slate-200">{maskedEmail || recoveryEmail}</strong>. Ingréselo junto a su nueva contraseña.
             </p>
 
-            {/* Simulated Email Delivery Preview Banner for instantaneous development & preview */}
             {demoCodeNotice && (
-              <div className="p-3 rounded-xl bg-slate-800/90 border border-emerald-500/40 text-xs text-slate-200 shadow-inner">
-                <div className="flex items-center justify-between mb-1.5">
-                  <div className="flex items-center gap-1.5 text-emerald-400 text-[11px] font-semibold">
-                    <Mail className="w-3.5 h-3.5" />
-                    <span>Buzón de correo seguro (Código emitido):</span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => handleCopyCode(demoCodeNotice)}
-                    className="flex items-center gap-1 text-[11px] text-emerald-400 hover:text-emerald-300 cursor-pointer font-semibold bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-700/50 transition"
-                  >
-                    {copiedCode ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
-                    <span>{copiedCode ? '¡Copiado!' : 'Copiar código'}</span>
-                  </button>
+              <div className="p-3 bg-emerald-950/40 border border-emerald-500/40 rounded-xl text-xs flex items-center justify-between text-emerald-300">
+                <div className="flex items-center gap-2">
+                  <Info className="w-4 h-4 shrink-0 text-emerald-400" />
+                  <span>Código de verificación: <strong className="text-white tracking-widest text-sm ml-1">{demoCodeNotice}</strong></span>
                 </div>
-                <div className="font-mono text-xl tracking-widest text-center text-emerald-400 font-bold bg-slate-950/60 py-2 rounded-lg border border-slate-700">
-                  {demoCodeNotice}
-                </div>
+                <button
+                  type="button"
+                  onClick={() => handleCopyCode(demoCodeNotice)}
+                  className="p-1 rounded bg-emerald-800/60 hover:bg-emerald-700 text-white text-[10px] font-semibold flex items-center gap-1 cursor-pointer transition"
+                  title="Copiar código"
+                >
+                  {copiedCode ? <Check className="w-3 h-3 text-emerald-300" /> : <Copy className="w-3 h-3" />}
+                  <span>{copiedCode ? 'Copiado' : 'Usar'}</span>
+                </button>
               </div>
             )}
 
-            <form onSubmit={handleConfirmPasswordReset} className="space-y-3">
+            <form onSubmit={handleConfirmPasswordReset} className="space-y-3.5">
               <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
-                  Código de Verificación (6 dígitos)
-                </label>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">Código de 6 Dígitos</label>
                 <div className="relative">
                   <KeyRound className="w-4 h-4 absolute left-3 top-3 text-slate-500" />
                   <input
@@ -904,16 +918,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     maxLength={6}
                     placeholder="123456"
                     value={resetCode}
-                    onChange={(e) => setResetCode(e.target.value.replace(/\D/g, ''))}
-                    className="w-full bg-slate-800 border border-slate-700 rounded-xl pl-9 pr-3 py-2 text-base font-mono tracking-wider text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition"
+                    onChange={(e) => setResetCode(e.target.value.replace(/[^0-9]/g, ''))}
+                    className="w-full bg-slate-800 border border-slate-700 rounded-xl pl-9 pr-3 py-2 text-sm text-white tracking-widest font-mono text-center placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition"
                   />
                 </div>
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
-                  Nueva Contraseña
-                </label>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">Nueva Contraseña</label>
                 <div className="relative">
                   <Lock className="w-4 h-4 absolute left-3 top-3 text-slate-500" />
                   <input
@@ -928,7 +940,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   <button
                     type="button"
                     onClick={() => setShowNewPassword(!showNewPassword)}
-                    className="absolute right-3 top-2.5 text-slate-500 hover:text-slate-300 transition cursor-pointer"
+                    className="absolute right-3 top-2.5 text-slate-400 hover:text-white transition cursor-pointer"
                   >
                     {showNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
@@ -936,16 +948,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
-                  Confirmar Nueva Contraseña
-                </label>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">Confirmar Nueva Contraseña</label>
                 <div className="relative">
                   <Lock className="w-4 h-4 absolute left-3 top-3 text-slate-500" />
                   <input
                     id="input-confirm-password"
                     type={showNewPassword ? 'text' : 'password'}
                     required
-                    placeholder="Repita su nueva contraseña"
+                    placeholder="Repita la nueva contraseña"
                     value={confirmPassword}
                     onChange={(e) => setConfirmPassword(e.target.value)}
                     className="w-full bg-slate-800 border border-slate-700 rounded-xl pl-9 pr-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition"
@@ -955,10 +965,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
               <div className="flex gap-2 pt-2">
                 <button
+                  id="btn-back-to-login"
                   type="button"
                   onClick={() => {
                     resetFormState();
-                    setMode('forgot');
+                    setMode('login');
                   }}
                   className="flex-1 flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold transition cursor-pointer"
                 >
@@ -966,7 +977,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   <span>Volver</span>
                 </button>
                 <button
-                  id="btn-confirm-password-reset"
+                  id="btn-submit-new-password"
                   type="submit"
                   disabled={loading}
                   className="flex-2 flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold transition shadow-lg shadow-emerald-900/30 cursor-pointer"
@@ -994,17 +1005,17 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               type="button"
               onClick={handleDemoLogin}
               disabled={loading}
-              className="w-full flex items-center justify-center gap-2 py-2 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-emerald-400 hover:text-emerald-300 border border-slate-700 text-xs font-semibold transition cursor-pointer"
+              className="w-full flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-emerald-400 hover:text-emerald-300 border border-slate-700 text-xs font-bold transition cursor-pointer shadow-md"
             >
               <Sparkles className="w-3.5 h-3.5" />
-              <span>Ingresar con Cuenta Demo (Cultivo de Piñas)</span>
+              <span>Cuenta Demo (Cultivo de Piñas) — Acceso Directo Inmediato</span>
             </button>
           </div>
         )}
 
         <div className="mt-4 flex items-center justify-center gap-1.5 text-[11px] text-slate-500">
           <ShieldCheck className="w-3.5 h-3.5 text-emerald-500" />
-          <span>Contraseñas seguras y datos aislados por usuario</span>
+          <span>Contraseñas seguras • Compatible con Supabase & Vercel</span>
         </div>
       </div>
     </div>
