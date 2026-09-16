@@ -183,12 +183,28 @@ export const Navbar: React.FC<NavbarProps> = ({
           <div className="flex items-center gap-2 pl-2 border-l border-slate-800">
             {user ? (
               <div className="flex items-center gap-2">
-                <div className="text-right hidden sm:block">
-                  <div className="text-xs font-bold text-slate-200 truncate max-w-[120px]">
+                {user.avatar ? (
+                  <img
+                    src={user.avatar}
+                    alt={user.name || user.username}
+                    referrerPolicy="no-referrer"
+                    className="w-7 h-7 rounded-full border border-emerald-500 object-cover"
+                  />
+                ) : (
+                  <div className="w-7 h-7 rounded-full bg-emerald-700 text-white flex items-center justify-center text-xs font-bold uppercase">
+                    {(user.name || user.username || 'U').charAt(0)}
+                  </div>
+                )}
+                <div 
+                  onClick={() => handleNav('configuracion')}
+                  className="text-right hidden sm:block cursor-pointer hover:opacity-80 transition"
+                  title="Ver perfil y credencial QR"
+                >
+                  <div className="text-xs font-bold text-slate-200 truncate max-w-[130px]">
                     {user.name || user.fullName || user.username}
                   </div>
-                  <div className="text-[10px] text-emerald-400 font-mono">
-                    @{user.username}
+                  <div className="text-[10px] text-emerald-400 font-medium truncate max-w-[130px]">
+                    {user.position || `@${user.username}`}
                   </div>
                 </div>
 

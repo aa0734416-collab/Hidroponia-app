@@ -26,7 +26,17 @@ export const api = {
     return headers;
   },
 
-  async register(data: { name: string; username: string; email: string; password: string }): Promise<{ token: string; user: User }> {
+  async register(data: {
+    name: string;
+    username: string;
+    email: string;
+    password: string;
+    position?: string;
+    phone?: string;
+    farmName?: string;
+    avatar?: string;
+    qrCode?: string;
+  }): Promise<{ token: string; user: User }> {
     const res = await fetch('/api/auth/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -97,6 +107,49 @@ export const api = {
     return result;
   },
 
+  async getGoogleAuthConfig(): Promise<{
+    configured: boolean;
+    clientId: string;
+    appUrl: string;
+  }> {
+    const res = await fetch('/api/auth/google/config');
+    if (!res.ok) {
+      return { configured: false, clientId: '', appUrl: '' };
+    }
+    return res.json();
+  },
+
+  async getGoogleOAuthUrl(redirectUri?: string): Promise<{ url: string; redirectUri: string }> {
+    const url = redirectUri
+      ? `/api/auth/google/url?redirect_uri=${encodeURIComponent(redirectUri)}`
+      : '/api/auth/google/url';
+    const res = await fetch(url);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'No se pudo generar la URL de autenticación con Google');
+    }
+    return res.json();
+  },
+
+  async loginWithGoogleToken(params: {
+    credential?: string;
+    accessToken?: string;
+    directProfile?: { sub: string; email: string; name?: string; picture?: string };
+  }): Promise<{ token: string; user: User }> {
+    const res = await fetch('/api/auth/google', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Error al iniciar sesión con Google');
+    }
+    const result = await res.json();
+    this.setToken(result.token);
+    return result;
+  },
+
   async getMe(): Promise<User | null> {
     const token = this.getToken();
     if (!token) return null;
@@ -113,6 +166,19 @@ export const api = {
     } catch {
       return null;
     }
+  },
+
+  async updateProfile(profileData: Partial<User>): Promise<{ success: boolean; user: User }> {
+    const res = await fetch('/api/auth/profile', {
+      method: 'PUT',
+      headers: this.getHeaders(),
+      body: JSON.stringify(profileData),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Error al actualizar el perfil');
+    }
+    return res.json();
   },
 
   async logout(): Promise<void> {

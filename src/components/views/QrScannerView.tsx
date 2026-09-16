@@ -9,9 +9,27 @@ import {
   Sprout,
   Wheat,
   Sparkles,
+  UserCheck,
+  Briefcase,
+  Building2,
+  Mail,
+  Phone,
 } from 'lucide-react';
 import jsQR from 'jsqr';
 import { AppData, Plant, ForageLot } from '../../types';
+
+interface ScannedUserCred {
+  type: string;
+  app: string;
+  id?: string;
+  user: string;
+  name: string;
+  position: string;
+  email: string;
+  farm: string;
+  phone?: string;
+  updatedAt?: string;
+}
 
 interface QrScannerViewProps {
   data: AppData;
@@ -27,6 +45,7 @@ export const QrScannerView: React.FC<QrScannerViewProps> = ({
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [scanResult, setScanResult] = useState<string | null>(null);
+  const [scannedUser, setScannedUser] = useState<ScannedUserCred | null>(null);
   const [manualCode, setManualCode] = useState('');
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -79,7 +98,21 @@ export const QrScannerView: React.FC<QrScannerViewProps> = ({
 
   const handleResolveCode = (code: string) => {
     setScanResult(code);
+    setScannedUser(null);
     stopCamera();
+
+    // Check if it's a JSON user credential
+    try {
+      if (code.trim().startsWith('{') && code.trim().endsWith('}')) {
+        const parsed = JSON.parse(code.trim());
+        if (parsed.type === 'user_credential' || parsed.app === 'HydroControl' || parsed.position) {
+          setScannedUser(parsed);
+          return;
+        }
+      }
+    } catch {
+      // not JSON, continue
+    }
 
     // Check if it's a plant
     const plant = data.plants.find(
@@ -244,6 +277,60 @@ export const QrScannerView: React.FC<QrScannerViewProps> = ({
           </label>
         </div>
       </div>
+
+      {/* Scanned User Credential Modal / Card */}
+      {scannedUser && (
+        <div className="p-6 bg-gradient-to-br from-slate-900 to-emerald-950 rounded-3xl border border-emerald-500/50 shadow-xl text-white space-y-4">
+          <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+            <div className="flex items-center gap-2">
+              <UserCheck className="w-5 h-5 text-emerald-400" />
+              <h3 className="font-extrabold text-base text-white">Credencial de Usuario Verificada por QR</h3>
+            </div>
+            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+              Personal Autorizado
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="p-4 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-2">
+              <div className="text-xs text-slate-400 uppercase font-bold">Datos del Operador</div>
+              <div className="text-lg font-black text-white">{scannedUser.name}</div>
+              <div className="flex items-center gap-1.5 text-xs text-emerald-300 font-bold">
+                <Briefcase className="w-3.5 h-3.5" />
+                <span>Cargo: {scannedUser.position}</span>
+              </div>
+              <div className="text-xs text-slate-400 font-mono">@{scannedUser.user}</div>
+            </div>
+
+            <div className="p-4 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-2 text-xs">
+              <div className="text-slate-400 uppercase font-bold text-[11px]">Centro de Operaciones</div>
+              <div className="flex items-center gap-2 text-slate-200">
+                <Building2 className="w-4 h-4 text-slate-400 shrink-0" />
+                <span className="font-medium">{scannedUser.farm || 'Finca La Bocana'}</span>
+              </div>
+              <div className="flex items-center gap-2 text-slate-200">
+                <Mail className="w-4 h-4 text-slate-400 shrink-0" />
+                <span className="font-medium">{scannedUser.email}</span>
+              </div>
+              {scannedUser.phone && (
+                <div className="flex items-center gap-2 text-slate-200">
+                  <Phone className="w-4 h-4 text-slate-400 shrink-0" />
+                  <span className="font-medium">{scannedUser.phone}</span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="flex justify-end pt-2">
+            <button
+              onClick={() => setScannedUser(null)}
+              className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-200 border border-slate-700 transition cursor-pointer"
+            >
+              Cerrar Ficha
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Manual Search or Quick Selection */}
       <div className="p-6 bg-white rounded-2xl border border-slate-200 shadow-xs space-y-4">

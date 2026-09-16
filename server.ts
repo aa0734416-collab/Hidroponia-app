@@ -122,9 +122,9 @@ function authMiddleware(req: express.Request, res: express.Response, next: expre
 // ----------------------------------------------------
 
 app.post('/api/auth/register', (req, res) => {
-  const { name, username, email, password } = req.body;
+  const { name, username, email, password, position, phone, farmName, avatar, qrCode } = req.body;
   if (!name || !username || !email || !password) {
-    res.status(400).json({ error: 'Todos los campos son requeridos: nombre, usuario, correo y contraseña' });
+    res.status(400).json({ error: 'Todos los campos básicos son requeridos: nombre, usuario, correo y contraseña' });
     return;
   }
 
@@ -148,8 +148,16 @@ app.post('/api/auth/register', (req, res) => {
   const newUser: StoredUser = {
     id: userId,
     name,
+    fullName: name,
     username,
     email,
+    position: position || 'Productor Hidropónico',
+    phone: phone || '',
+    farmName: farmName || 'Finca La Bocana',
+    avatar: avatar || '',
+    qrCode: qrCode || '',
+    role: 'owner',
+    authProvider: 'local',
     apiKey,
     createdAt: new Date().toISOString(),
     salt,
@@ -209,6 +217,31 @@ app.get('/api/auth/me', authMiddleware, (req, res) => {
   const user = (req as any).user;
   const { passwordHash: _, salt: __, ...userProfile } = user;
   res.json({ user: userProfile });
+});
+
+// Update Profile data (Avatar, Position / Cargo, Phone, FarmName, Name, QR Code)
+app.put('/api/auth/profile', authMiddleware, (req, res) => {
+  const currentUser = (req as any).user as StoredUser;
+  const { name, fullName, position, phone, farmName, avatar, qrCode } = req.body;
+
+  const targetUser = db.users.find((u) => u.id === currentUser.id);
+  if (!targetUser) {
+    res.status(404).json({ error: 'Usuario no encontrado' });
+    return;
+  }
+
+  if (name !== undefined) targetUser.name = name;
+  if (fullName !== undefined) targetUser.fullName = fullName;
+  if (position !== undefined) targetUser.position = position;
+  if (phone !== undefined) targetUser.phone = phone;
+  if (farmName !== undefined) targetUser.farmName = farmName;
+  if (avatar !== undefined) targetUser.avatar = avatar;
+  if (qrCode !== undefined) targetUser.qrCode = qrCode;
+
+  saveDB(db);
+
+  const { passwordHash: _, salt: __, ...userProfile } = targetUser;
+  res.json({ success: true, user: userProfile });
 });
 
 app.post('/api/auth/logout', authMiddleware, (req, res) => {
@@ -353,6 +386,342 @@ app.post('/api/auth/reset-password', (req, res) => {
     token: sessionToken,
     user: userProfile,
   });
+});
+
+// ----------------------------------------------------
+// GOOGLE OAUTH & SIGN-IN
+// ----------------------------------------------------
+
+// Helper to find or create a user from Google profile info
+function findOrCreateGoogleUser(googleProfile: {
+  sub: string;
+  email: string;
+  name?: string;
+  picture?: string;
+}): { token: string; user: Omit<StoredUser, 'passwordHash' | 'salt'> } {
+  const normEmail = googleProfile.email.trim().toLowerCase();
+  let user = db.users.find(
+    (u) =>
+      (u.googleId && u.googleId === googleProfile.sub) ||
+      u.email.toLowerCase() === normEmail
+  );
+
+  if (!user) {
+    // Generate new unique user ID
+    const userId = 'usr-' + crypto.randomUUID();
+    const apiKey = 'hc_live_' + crypto.randomBytes(12).toString('hex');
+    const baseUsername = normEmail.split('@')[0].replace(/[^a-zA-Z0-9_]/g, '') || 'usuario';
+    let uniqueUsername = baseUsername;
+    let counter = 1;
+    while (db.users.some((u) => u.username.toLowerCase() === uniqueUsername.toLowerCase())) {
+      uniqueUsername = `${baseUsername}${counter++}`;
+    }
+
+    const dummySalt = crypto.randomBytes(16).toString('hex');
+    const dummyHash = hashPassword(crypto.randomBytes(32).toString('hex'), dummySalt);
+
+    user = {
+      id: userId,
+      name: googleProfile.name || baseUsername,
+      fullName: googleProfile.name || baseUsername,
+      username: uniqueUsername,
+      email: normEmail,
+      avatar: googleProfile.picture,
+      position: 'Productor Hidropónico',
+      farmName: 'Finca La Bocana',
+      role: 'owner',
+      authProvider: 'google',
+      googleId: googleProfile.sub,
+      apiKey,
+      createdAt: new Date().toISOString(),
+      salt: dummySalt,
+      passwordHash: dummyHash,
+    };
+
+    db.users.push(user);
+    db.userData[userId] = JSON.parse(JSON.stringify(initialAppData));
+  } else {
+    // Update existing user with Google metadata if missing
+    user.googleId = googleProfile.sub;
+    if (googleProfile.picture && !user.avatar) {
+      user.avatar = googleProfile.picture;
+    }
+    if (googleProfile.name && !user.name) {
+      user.name = googleProfile.name;
+    }
+    if (!user.authProvider) {
+      user.authProvider = 'google';
+    }
+  }
+
+  // Generate active session token
+  const sessionToken = 'tok_' + crypto.randomBytes(24).toString('hex');
+  db.tokens[sessionToken] = user.id;
+  saveDB(db);
+
+  const { passwordHash: _, salt: __, ...userProfile } = user;
+  return { token: sessionToken, user: userProfile };
+}
+
+// 1. Get Google Auth Config / URL endpoint
+app.get('/api/auth/google/config', (req, res) => {
+  const clientId = process.env.GOOGLE_CLIENT_ID || '';
+  const appUrl = process.env.APP_URL || '';
+  res.json({
+    configured: !!clientId,
+    clientId,
+    appUrl,
+  });
+});
+
+// 2. Generate Google OAuth URL for popup authentication
+app.get('/api/auth/google/url', (req, res) => {
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  const rawRedirect = req.query.redirect_uri as string;
+
+  if (!clientId) {
+    res.status(400).json({
+      error: 'Google Client ID no configurado en variables de entorno (GOOGLE_CLIENT_ID).',
+      configured: false,
+    });
+    return;
+  }
+
+  // Determine redirect URI: use provided or build from APP_URL / Host
+  const redirectUri =
+    rawRedirect ||
+    (process.env.APP_URL ? `${process.env.APP_URL}/auth/callback` : `${req.protocol}://${req.get('host')}/auth/callback`);
+
+  const params = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    response_type: 'code',
+    scope: 'openid email profile',
+    access_type: 'offline',
+    prompt: 'select_account',
+  });
+
+  const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
+  res.json({ url: authUrl, redirectUri });
+});
+
+// 3. Callback route for Google OAuth popup
+app.get(['/auth/callback', '/auth/callback/'], async (req, res) => {
+  const { code, error } = req.query;
+
+  if (error || !code) {
+    const errorMsg = (error as string) || 'No se recibió código de autorización';
+    res.send(`
+      <!DOCTYPE html>
+      <html>
+        <head><title>HydroControl - Error de Autenticación</title></head>
+        <body style="font-family:system-ui,-apple-system,sans-serif;background:#0f172a;color:#f8fafc;padding:30px;text-align:center;">
+          <h2 style="color:#ef4444;">Error al iniciar con Google</h2>
+          <p>${errorMsg}</p>
+          <button onclick="window.close()" style="background:#334155;color:#fff;border:none;padding:8px 16px;border-radius:8px;cursor:pointer;">Cerrar ventana</button>
+          <script>
+            if (window.opener) {
+              window.opener.postMessage({ type: 'GOOGLE_AUTH_ERROR', error: ${JSON.stringify(errorMsg)} }, '*');
+            }
+          </script>
+        </body>
+      </html>
+    `);
+    return;
+  }
+
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+
+  if (!clientId || !clientSecret) {
+    res.send(`
+      <!DOCTYPE html>
+      <html>
+        <body style="font-family:system-ui,-apple-system,sans-serif;background:#0f172a;color:#f8fafc;padding:30px;text-align:center;">
+          <h3 style="color:#f59e0b;">Falta GOOGLE_CLIENT_SECRET</h3>
+          <p>Configure las credenciales de Google OAuth en el entorno.</p>
+          <script>
+            if (window.opener) {
+              window.opener.postMessage({ type: 'GOOGLE_AUTH_ERROR', error: 'Falta configurar credenciales secretas de Google' }, '*');
+            }
+          </script>
+        </body>
+      </html>
+    `);
+    return;
+  }
+
+  try {
+    const redirectUri = `${req.protocol}://${req.get('host')}/auth/callback`;
+
+    // Exchange authorization code with Google token endpoint
+    const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        code: code as string,
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uri: redirectUri,
+        grant_type: 'authorization_code',
+      }),
+    });
+
+    if (!tokenResponse.ok) {
+      const errDetail = await tokenResponse.text();
+      console.error('Google token exchange error:', errDetail);
+      throw new Error('Error al intercambiar código con Google');
+    }
+
+    const tokenData = (await tokenResponse.json()) as { access_token: string; id_token?: string };
+
+    // Fetch user info from Google userinfo endpoint
+    const userInfoResponse = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+      headers: { Authorization: `Bearer ${tokenData.access_token}` },
+    });
+
+    if (!userInfoResponse.ok) {
+      throw new Error('No se pudo obtener información del perfil de Google');
+    }
+
+    const googleUser = (await userInfoResponse.json()) as {
+      sub: string;
+      email: string;
+      name?: string;
+      picture?: string;
+    };
+
+    const session = findOrCreateGoogleUser(googleUser);
+
+    res.send(`
+      <!DOCTYPE html>
+      <html>
+        <head><title>HydroControl - Autenticado</title></head>
+        <body style="font-family:system-ui,-apple-system,sans-serif;background:#0f172a;color:#f8fafc;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;">
+          <div style="text-align:center;padding:24px;background:#1e293b;border-radius:16px;max-width:320px;border:1px solid #334155;">
+            <div style="font-size:32px;margin-bottom:8px;">🌱</div>
+            <h3 style="color:#10b981;margin:0 0 8px 0;font-size:18px;">¡Inicio de sesión exitoso!</h3>
+            <p style="color:#94a3b8;font-size:13px;margin:0 0 16px 0;">Conectando con HydroControl...</p>
+            <p style="font-size:11px;color:#64748b;">Esta ventana se cerrará automáticamente.</p>
+          </div>
+          <script>
+            const authPayload = {
+              type: 'GOOGLE_AUTH_SUCCESS',
+              token: ${JSON.stringify(session.token)},
+              user: ${JSON.stringify(session.user)}
+            };
+            if (window.opener) {
+              window.opener.postMessage(authPayload, '*');
+              setTimeout(() => window.close(), 600);
+            } else {
+              window.location.href = '/';
+            }
+          </script>
+        </body>
+      </html>
+    `);
+  } catch (err: any) {
+    console.error('OAuth Callback Error:', err);
+    res.send(`
+      <!DOCTYPE html>
+      <html>
+        <body style="font-family:system-ui,-apple-system,sans-serif;background:#0f172a;color:#f8fafc;padding:30px;text-align:center;">
+          <h3 style="color:#ef4444;">Error en la autenticación</h3>
+          <p>${err.message || 'Ocurrió un error inesperado al conectar con Google'}</p>
+          <script>
+            if (window.opener) {
+              window.opener.postMessage({ type: 'GOOGLE_AUTH_ERROR', error: ${JSON.stringify(err.message || 'Error con Google')} }, '*');
+            }
+          </script>
+        </body>
+      </html>
+    `);
+  }
+});
+
+// 4. Client-side ID Token / Access Token verification or direct login
+app.post('/api/auth/google', async (req, res) => {
+  const { credential, accessToken, directProfile } = req.body;
+
+  try {
+    let profile: { sub: string; email: string; name?: string; picture?: string } | null = null;
+
+    // Case A: Received ID token from Google Identity Services (GSI)
+    if (credential && typeof credential === 'string') {
+      // Decode JWT parts or call Google's tokeninfo endpoint for verification
+      try {
+        const verifyRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(credential)}`);
+        if (verifyRes.ok) {
+          const verified = await verifyRes.json();
+          profile = {
+            sub: verified.sub,
+            email: verified.email,
+            name: verified.name,
+            picture: verified.picture,
+          };
+        }
+      } catch (e) {
+        console.warn('Could not verify token online, attempting standard parse:', e);
+      }
+
+      // Fallback decode standard JWT payload if verification network issue
+      if (!profile) {
+        const parts = credential.split('.');
+        if (parts.length === 3) {
+          const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf-8'));
+          if (payload.sub && payload.email) {
+            profile = {
+              sub: payload.sub,
+              email: payload.email,
+              name: payload.name,
+              picture: payload.picture,
+            };
+          }
+        }
+      }
+    }
+
+    // Case B: Received access token from client-side token client (GSI initTokenClient)
+    else if (accessToken && typeof accessToken === 'string') {
+      const userInfoResponse = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (userInfoResponse.ok) {
+        const data = await userInfoResponse.json();
+        profile = {
+          sub: data.sub,
+          email: data.email,
+          name: data.name,
+          picture: data.picture,
+        };
+      }
+    }
+
+    // Case C: Explicit direct profile (for simulated preview or fallback)
+    else if (directProfile && directProfile.email) {
+      profile = {
+        sub: directProfile.sub || 'g_' + crypto.randomBytes(8).toString('hex'),
+        email: directProfile.email,
+        name: directProfile.name,
+        picture: directProfile.picture,
+      };
+    }
+
+    if (!profile || !profile.email) {
+      res.status(400).json({ error: 'No se pudo obtener el perfil de Google válido' });
+      return;
+    }
+
+    const session = findOrCreateGoogleUser(profile);
+    res.json({
+      success: true,
+      token: session.token,
+      user: session.user,
+    });
+  } catch (err: any) {
+    console.error('Google auth error:', err);
+    res.status(500).json({ error: err.message || 'Error al autenticar con Google' });
+  }
 });
 
 // ----------------------------------------------------

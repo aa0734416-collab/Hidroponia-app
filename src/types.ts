@@ -1,4 +1,4 @@
-export type UserRole = 'owner' | 'operator' | 'viewer';
+export type UserRole = 'owner' | 'operator' | 'technician' | 'viewer';
 
 export interface User {
   id: string;
@@ -6,6 +6,14 @@ export interface User {
   fullName?: string;
   username: string;
   email: string;
+  avatar?: string;
+  position?: string; // Cargo / Rol profesional (ej: Administrador General, Agrónomo, Operador Hidropónico)
+  phone?: string;
+  farmName?: string; // Nombre de la finca / empresa
+  role?: UserRole;
+  qrCode?: string; // Código QR generado para la credencial de acceso
+  authProvider?: 'local' | 'google';
+  googleId?: string;
   apiKey?: string;
   createdAt: string;
 }

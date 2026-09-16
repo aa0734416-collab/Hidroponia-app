@@ -432,6 +432,19 @@ export default function App() {
     );
   }
 
+  // If user is not authenticated, require entering data and password to enter the application
+  if (!user) {
+    return (
+      <div id="hydrocontrol-auth-gate" className="min-h-screen bg-slate-950 flex flex-col justify-between">
+        <AuthModal
+          initialMode={authMode}
+          requireAuth={true}
+          onSuccess={handleAuthSuccess}
+        />
+      </div>
+    );
+  }
+
   const unreadAlertsCount = (data.alerts || []).filter((a) => !a.acknowledged).length;
   const pendingTasksCount = (data.tasks || data.calendarTasks || []).filter((t) => !t.completed).length;
 
@@ -616,6 +629,7 @@ export default function App() {
             <SettingsView
               data={data}
               user={user}
+              onUpdateUser={(updatedUser) => setUser(updatedUser)}
               onUpdateLocation={handleUpdateLocation}
               onRefreshWeather={handleRefreshWeather}
               onOpenForgotPassword={() => {

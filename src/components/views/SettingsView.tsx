@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   MapPin,
   CloudSun,
@@ -14,10 +14,23 @@ import {
   Layers,
   Code2,
   Sparkles,
+  User as UserIcon,
+  Briefcase,
+  Camera,
+  QrCode,
+  Phone,
+  Building2,
+  Mail,
+  Download,
+  CheckCircle2,
+  RefreshCw,
+  KeyRound,
+  ShieldAlert,
+  ShieldCheck as ShieldCheckIcon,
 } from 'lucide-react';
+import QRCode from 'qrcode';
 import { AppData, WeatherData, User as UserType } from '../../types';
 import { api } from '../../services/api';
-import { KeyRound, ShieldAlert, ShieldCheck as ShieldCheckIcon } from 'lucide-react';
 
 interface SettingsViewProps {
   data: AppData;
@@ -25,6 +38,7 @@ interface SettingsViewProps {
   onUpdateLocation: (location: string, lat: number, lon: number) => void;
   onRefreshWeather: () => void;
   onOpenForgotPassword?: () => void;
+  onUpdateUser?: (updatedUser: UserType) => void;
 }
 
 export const SettingsView: React.FC<SettingsViewProps> = ({
@@ -33,6 +47,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   onUpdateLocation,
   onRefreshWeather,
   onOpenForgotPassword,
+  onUpdateUser,
 }) => {
   const [locationName, setLocationName] = useState(
     data.locationName || 'La Bocana, Cantón Piñas, Provincia de El Oro, Ecuador'
@@ -42,6 +57,127 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [copiedKey, setCopiedKey] = useState(false);
   const [copiedSnippet, setCopiedSnippet] = useState(false);
   const [savedSuccess, setSavedSuccess] = useState(false);
+
+  // User Profile Form State
+  const [profileName, setProfileName] = useState(user?.name || user?.fullName || '');
+  const [profilePosition, setProfilePosition] = useState(user?.position || 'Productor Hidropónico');
+  const [profilePhone, setProfilePhone] = useState(user?.phone || '');
+  const [profileFarmName, setProfileFarmName] = useState(user?.farmName || 'Finca La Bocana');
+  const [profileAvatar, setProfileAvatar] = useState(user?.avatar || '');
+  const [profileQrCode, setProfileQrCode] = useState(user?.qrCode || '');
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [profileMessage, setProfileMessage] = useState<string | null>(null);
+  const [profileError, setProfileError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Sync state when user prop changes
+  useEffect(() => {
+    if (user) {
+      setProfileName(user.name || user.fullName || '');
+      setProfilePosition(user.position || 'Productor Hidropónico');
+      setProfilePhone(user.phone || '');
+      setProfileFarmName(user.farmName || 'Finca La Bocana');
+      setProfileAvatar(user.avatar || '');
+      if (user.qrCode) {
+        setProfileQrCode(user.qrCode);
+      }
+    }
+  }, [user]);
+
+  // Generate QR Code on change or if not present
+  useEffect(() => {
+    if (user) {
+      const qrData = JSON.stringify({
+        type: 'user_credential',
+        app: 'HydroControl',
+        id: user.id,
+        user: user.username,
+        name: profileName || user.name || user.username,
+        position: profilePosition || 'Productor',
+        email: user.email,
+        farm: profileFarmName || 'Finca La Bocana',
+        phone: profilePhone || '',
+        updatedAt: new Date().toISOString(),
+      });
+
+      QRCode.toDataURL(qrData, {
+        width: 320,
+        margin: 2,
+        color: {
+          dark: '#064e3b',
+          light: '#ffffff',
+        },
+      })
+        .then((url) => {
+          setProfileQrCode(url);
+        })
+        .catch((err) => console.warn('QR gen error:', err));
+    }
+  }, [user, profileName, profilePosition, profileFarmName, profilePhone]);
+
+  // Handle Photo selection
+  const handlePhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+      setProfileError('Por favor seleccione un archivo de imagen válido (PNG, JPG, WebP)');
+      return;
+    }
+
+    if (file.size > 5 * 1024 * 1024) {
+      setProfileError('La foto no debe superar los 5MB');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      setProfileAvatar(result);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  // Save Profile Handler
+  const handleSaveProfile = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setProfileSaving(true);
+    setProfileError(null);
+    setProfileMessage(null);
+
+    try {
+      const res = await api.updateProfile({
+        name: profileName.trim(),
+        fullName: profileName.trim(),
+        position: profilePosition.trim(),
+        phone: profilePhone.trim(),
+        farmName: profileFarmName.trim(),
+        avatar: profileAvatar,
+        qrCode: profileQrCode,
+      });
+
+      if (res.user && onUpdateUser) {
+        onUpdateUser(res.user);
+      }
+      setProfileMessage('¡Datos de usuario, foto y código QR actualizados con éxito!');
+      setTimeout(() => setProfileMessage(null), 4000);
+    } catch (err: any) {
+      setProfileError(err.message || 'No se pudo guardar los cambios del perfil');
+    } finally {
+      setProfileSaving(false);
+    }
+  };
+
+  // Download QR Credential as image
+  const handleDownloadQr = () => {
+    if (!profileQrCode) return;
+    const a = document.createElement('a');
+    a.href = profileQrCode;
+    a.download = `credencial_qr_${user?.username || 'usuario'}.png`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
 
   const apiKey = data.userIotApiKey || 'hc_live_bocana_77f4a9';
 
@@ -119,10 +255,275 @@ void loop() {
     <div id="view-settings" className="space-y-8">
       {/* Header */}
       <div>
-        <h1 className="text-2xl font-extrabold text-slate-900">Ubicación y Conectividad IoT</h1>
+        <h1 className="text-2xl font-extrabold text-slate-900">Configuración, Perfil y Conectividad</h1>
         <p className="text-xs text-slate-500 mt-0.5">
-          Configuración geográfica del cultivo en La Bocana, Piñas, El Oro y parámetros de comunicación para ESP32
+          Gestione los datos del usuario, foto, cargo, credencial QR única, ubicación geográfica y parámetros IoT
         </p>
+      </div>
+
+      {/* User Profile & Generated QR Credential Section */}
+      <div className="bg-white rounded-3xl border border-slate-200 p-6 shadow-xs space-y-6">
+        <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+          <div className="flex items-center gap-2">
+            <UserIcon className="w-5 h-5 text-emerald-600" />
+            <h2 className="text-lg font-black text-slate-900">Perfil de Usuario y Credencial de Acceso QR</h2>
+          </div>
+          <span className="px-3 py-1 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+            {user?.authProvider === 'google' ? 'Acceso con Google' : 'Acceso con Usuario y Clave'}
+          </span>
+        </div>
+
+        {profileMessage && (
+          <div className="p-3.5 rounded-2xl bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-medium flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            <span>{profileMessage}</span>
+          </div>
+        )}
+
+        {profileError && (
+          <div className="p-3.5 rounded-2xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-medium flex items-center gap-2">
+            <ShieldAlert className="w-4 h-4 text-rose-600 shrink-0" />
+            <span>{profileError}</span>
+          </div>
+        )}
+
+        <form onSubmit={handleSaveProfile} className="space-y-6">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
+            {/* Left: Interactive Credential Preview Card */}
+            <div className="p-5 rounded-2xl bg-gradient-to-br from-slate-900 via-slate-800 to-emerald-950 text-white shadow-lg space-y-4 border border-slate-700/80">
+              <div className="flex items-center justify-between border-b border-slate-700 pb-3">
+                <span className="text-[11px] font-black uppercase tracking-wider text-emerald-400">
+                  Credencial Oficial HydroControl
+                </span>
+                <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-mono">
+                  ACTIVO
+                </span>
+              </div>
+
+              {/* Photo & Identity */}
+              <div className="flex items-center gap-3">
+                <div
+                  onClick={() => fileInputRef.current?.click()}
+                  className="w-16 h-16 rounded-2xl bg-slate-950 border-2 border-emerald-500/70 overflow-hidden shrink-0 cursor-pointer relative group flex items-center justify-center shadow-md transition hover:scale-105"
+                  title="Haga clic para cambiar o subir su foto"
+                >
+                  {profileAvatar ? (
+                    <img
+                      src={profileAvatar}
+                      alt="Foto de perfil"
+                      referrerPolicy="no-referrer"
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <div className="flex flex-col items-center justify-center text-slate-400 group-hover:text-emerald-300">
+                      <Camera className="w-5 h-5" />
+                      <span className="text-[9px] mt-0.5 font-medium">Subir</span>
+                    </div>
+                  )}
+                  <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 flex items-center justify-center transition">
+                    <Camera className="w-4 h-4 text-white" />
+                  </div>
+                </div>
+
+                <div className="min-w-0 flex-1">
+                  <h3 className="text-sm font-black text-white truncate">
+                    {profileName || user?.name || user?.username || 'Usuario'}
+                  </h3>
+                  <div className="inline-block mt-0.5 px-2 py-0.5 rounded text-[11px] font-bold bg-emerald-500/30 text-emerald-200 border border-emerald-500/40 truncate">
+                    {profilePosition || 'Operador'}
+                  </div>
+                  <div className="text-[10px] text-slate-400 mt-1 font-mono truncate">
+                    @{user?.username || 'usuario'}
+                  </div>
+                </div>
+              </div>
+
+              {/* Generated QR Code for User Identity */}
+              <div className="p-3 rounded-xl bg-slate-950/80 border border-slate-700/60 flex items-center gap-3">
+                {profileQrCode ? (
+                  <img
+                    src={profileQrCode}
+                    alt="Código QR de Usuario"
+                    className="w-20 h-20 bg-white rounded-lg p-1 shrink-0 shadow-sm"
+                  />
+                ) : (
+                  <div className="w-20 h-20 bg-slate-800 rounded-lg flex items-center justify-center shrink-0">
+                    <QrCode className="w-8 h-8 text-slate-600 animate-pulse" />
+                  </div>
+                )}
+                <div className="min-w-0 flex-1 space-y-1">
+                  <div className="text-[11px] font-bold text-white flex items-center gap-1">
+                    <QrCode className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Código QR Personal</span>
+                  </div>
+                  <p className="text-[10px] text-slate-400 leading-tight">
+                    Escaneable en el módulo de control para verificación de operador y registro de bitácora.
+                  </p>
+                  {profileQrCode && (
+                    <button
+                      type="button"
+                      onClick={handleDownloadQr}
+                      className="mt-1 flex items-center gap-1 text-[10px] font-bold text-emerald-300 hover:text-emerald-200 cursor-pointer"
+                    >
+                      <Download className="w-3 h-3" />
+                      <span>Descargar imagen QR</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Farm metadata */}
+              <div className="text-[10px] text-slate-400 pt-1 border-t border-slate-800 flex justify-between">
+                <span>Instalación:</span>
+                <span className="text-slate-200 font-semibold">{profileFarmName}</span>
+              </div>
+            </div>
+
+            {/* Right: Form inputs to edit user data */}
+            <div className="lg:col-span-2 space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Nombre Completo</label>
+                  <div className="relative">
+                    <UserIcon className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
+                    <input
+                      type="text"
+                      required
+                      placeholder="Ej. Juan Pérez"
+                      value={profileName}
+                      onChange={(e) => setProfileName(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-300 rounded-xl pl-9 pr-3 py-2 text-slate-900 font-medium focus:bg-white focus:border-emerald-500 transition"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Nombre de Usuario (Identificador)</label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-2.5 text-slate-400 font-bold text-sm">@</span>
+                    <input
+                      type="text"
+                      disabled
+                      value={user?.username || ''}
+                      className="w-full bg-slate-100 border border-slate-200 rounded-xl pl-8 pr-3 py-2 text-slate-500 font-mono font-bold cursor-not-allowed"
+                    />
+                  </div>
+                  <span className="text-[10px] text-slate-400 mt-0.5 block">El usuario es único para el acceso.</span>
+                </div>
+
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Cargo / Posición en el Cultivo</label>
+                  <div className="relative">
+                    <Briefcase className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
+                    <input
+                      type="text"
+                      required
+                      placeholder="Ej. Agrónomo, Operador Hidropónico, Gerente"
+                      value={profilePosition}
+                      onChange={(e) => setProfilePosition(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-300 rounded-xl pl-9 pr-3 py-2 text-slate-900 font-medium focus:bg-white focus:border-emerald-500 transition"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Finca / Instalación</label>
+                  <div className="relative">
+                    <Building2 className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
+                    <input
+                      type="text"
+                      placeholder="Ej. Finca La Bocana"
+                      value={profileFarmName}
+                      onChange={(e) => setProfileFarmName(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-300 rounded-xl pl-9 pr-3 py-2 text-slate-900 font-medium focus:bg-white focus:border-emerald-500 transition"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Correo Electrónico</label>
+                  <div className="relative">
+                    <Mail className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
+                    <input
+                      type="email"
+                      disabled
+                      value={user?.email || ''}
+                      className="w-full bg-slate-100 border border-slate-200 rounded-xl pl-9 pr-3 py-2 text-slate-500 font-medium cursor-not-allowed"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">Teléfono de Contacto</label>
+                  <div className="relative">
+                    <Phone className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
+                    <input
+                      type="tel"
+                      placeholder="+57 300 123 4567"
+                      value={profilePhone}
+                      onChange={(e) => setProfilePhone(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-300 rounded-xl pl-9 pr-3 py-2 text-slate-900 font-medium focus:bg-white focus:border-emerald-500 transition"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Photo file selection */}
+              <div className="pt-2 flex flex-wrap items-center gap-3">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*"
+                  onChange={handlePhotoChange}
+                  className="hidden"
+                />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition cursor-pointer border border-slate-200"
+                >
+                  <Camera className="w-4 h-4 text-emerald-600" />
+                  <span>{profileAvatar ? 'Cambiar Foto de Perfil' : 'Subir Foto de Perfil'}</span>
+                </button>
+
+                {profileAvatar && (
+                  <button
+                    type="button"
+                    onClick={() => setProfileAvatar('')}
+                    className="text-xs text-rose-500 hover:text-rose-600 font-medium"
+                  >
+                    Quitar foto
+                  </button>
+                )}
+
+                <span className="text-[11px] text-slate-400">
+                  Formato PNG, JPG o WebP. El código QR se regenera automáticamente con su cargo y datos.
+                </span>
+              </div>
+
+              <div className="pt-3 flex justify-end">
+                <button
+                  id="btn-save-profile"
+                  type="submit"
+                  disabled={profileSaving}
+                  className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold shadow-md shadow-emerald-700/20 transition cursor-pointer disabled:opacity-50"
+                >
+                  {profileSaving ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      <span>Guardando...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Save className="w-4 h-4" />
+                      <span>Guardar Datos de Perfil y QR</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </form>
       </div>
 
       {/* Location & Interactive Map Section */}
